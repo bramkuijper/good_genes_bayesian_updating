@@ -58,7 +58,7 @@ void GoodGenes::phenotypes()
 void GoodGenes::survival()
 {
     // aux variables to store trait values
-    double p,v,surv;
+    double v,surv;
 
     unsigned nm = males.size();
     unsigned nf = females.size();
@@ -69,7 +69,6 @@ void GoodGenes::survival()
     
     for (auto female_iter{females.begin()}; female_iter != females.end(); )
     {
-        p = 0.5 * (female_iter->p[0] + female_iter->p[1]);
         v = 0.5 * (female_iter->v[0] + female_iter->v[1]);
 
         surv = std::exp(-std::fabs(par.v_opt - v)) ;
@@ -122,46 +121,61 @@ void GoodGenes::survival()
 
 void GoodGenes::reproduction()
 {
-    long unsigned female_idx,male_idx;
-
     std::vector<Individual> nextgen{};
 
     std::uniform_int_distribution<unsigned> female_sampler(0, females.size() - 1);
+    std::vector <double> female_fitness(females.size(), 0.0);
 
-    for (unsigned newborn_idx{0}; newborn_idx < par.n; ++newborn_idx)
+    double cost;
+
+    for (unsigned female_idx{0}; female_idx < females.size(); ++female_idx)
     {
-        female_idx = female_sampler(rng_r);
+        cost = 0;
 
-        assert(female_idx >= 0);
-        assert(female_idx < females.size());
-
-        male_idx = choose(females[female_idx]);
+        choose(females[female_idx], cost);
         
-        assert(male_idx >= 0);
-        assert(male_idx < males.size());
+        assert(females[female_idx].mate < males.size());
 
-        Individual Kid(
-                females[female_idx],
-                males[male_idx],
-                rng_r,
-                par);
-
-        nextgen.push_back(Kid);
+        // we put a std::fabs here because if par.choice_sample_size * par.b == cost
+        // C++ might actually make the number a v tiny negative one, whereas it should just
+        // be 0.0
+        female_fitness[female_idx] = std::fabs(par.choice_sample_size * par.b - cost);
     }
 
-    assert(nextgen.size() == par.n);
+    std::discrete_distribution<unsigned> female_fitness_distribution(
+            female_fitness.begin(),
+            female_fitness.end());
 
-    females.clear();
-    males.clear();
+    std::vector<Individual> newborns{};
+
+    unsigned sampled_female;
+    unsigned sampled_female_mate;
+    
+    for (unsigned newborn_idx{0}; newborn_idx < par.n; ++newborn_idx)
+    {
+        sampled_female = female_fitness_distribution(rng_r);
+
+        assert(sampled_female < females.size());
+        sampled_female_mate = females[sampled_female].mate;
+
+        assert(sampled_female_mate < males.size());
+
+        newborns.push_back(
+                Individual(
+                    females[sampled_female],
+                    males[sampled_female_mate],
+                    rng_r,
+                    par));
+    }
 
     for (unsigned newborn_idx{0}; newborn_idx < par.n; ++newborn_idx)
     {
         if (uniform(rng_r) < 0.5)
         {
-            males.push_back(nextgen[newborn_idx]);
+            males.push_back(newborns[newborn_idx]);
         } else
         {
-            females.push_back(nextgen[newborn_idx]);
+            females.push_back(newborns[newborn_idx]);
         }
     }
 } // end reproduction
@@ -190,6 +204,8 @@ void GoodGenes::write_parameters()
         << "init_t;" << par.init_t << ";" << std::endl
         << "init_p;" << par.init_p << ";" << std::endl
         << "init_v;" << par.init_v << ";" << std::endl
+        << "init_prior_mean_x;" << par.init_prior_mean_x << ";" << std::endl
+        << "init_prior_sigma_x;" << par.init_prior_sigma_x << ";" << std::endl
         << "v_opt;" << par.v_opt << ";" << std::endl
         << "max_num_gen;" << par.max_num_gen << ";" << std::endl
         << "numoutgen;" << par.numoutgen << ";" << std::endl;
@@ -205,6 +221,11 @@ void GoodGenes::write_data()
     double ssv{0.0};
     double meanx{0.0};
     double ssx{0.0};
+
+    double mean_prior_mean_x{0.0};
+    double mean_prior_sigma_x{0.0};
+    double ss_prior_mean_x{0.0};
+    double ss_prior_sigma_x{0.0};
     
     //  covariances
     double stv{0.0};
@@ -217,7 +238,7 @@ void GoodGenes::write_data()
     unsigned long nm{males.size()};
 
     // aux variables to store trait values
-    double p,t,v,x;
+    double p,t,v,prior_mean,prior_sigma,x;
 
     for (auto female_iter{females.begin()};
             female_iter != females.end();
@@ -234,6 +255,15 @@ void GoodGenes::write_data()
         v = 0.5 * (female_iter->v[0] + female_iter->v[1]);
         meanv += v;
         ssv += v*v;
+
+        prior_mean = 0.5 * (female_iter->prior_mean_x[0] + female_iter->prior_mean_x[1]);
+        mean_prior_mean_x += prior_mean;
+        ss_prior_mean_x += prior_mean * prior_mean;
+
+        prior_sigma = 0.5 * (female_iter->prior_sigma_x[0] + female_iter->prior_sigma_x[1]);
+        mean_prior_sigma_x += prior_sigma;
+        ss_prior_sigma_x += prior_sigma * prior_sigma;
+
 
         stp += t * p;
         spv += p * v;
@@ -260,6 +290,14 @@ void GoodGenes::write_data()
         meanx += x;
         ssx += x*x;
         
+        prior_mean = 0.5 * (male_iter->prior_mean_x[0] + male_iter->prior_mean_x[1]);
+        mean_prior_mean_x += prior_mean;
+        ss_prior_mean_x += prior_mean * prior_mean;
+
+        prior_sigma = 0.5 * (male_iter->prior_sigma_x[0] + male_iter->prior_sigma_x[1]);
+        mean_prior_sigma_x += prior_sigma;
+        ss_prior_sigma_x += prior_sigma * prior_sigma;
+        
         stp += t * p;
         spv += p * v;
         stv += t * v;
@@ -270,11 +308,21 @@ void GoodGenes::write_data()
     meant /= (nf + nm);
     meanv /= (nf + nm);
     meanx /= nm;
+    mean_prior_mean_x /= (nf + nm);
+    mean_prior_sigma_x /= (nf + nm);
+
     
     double varp = ssp / (nf + nm) - meanp * meanp;
     double vart = sst / (nf + nm) - meant * meant;
     double varv = ssv / (nf + nm) - meanv * meanv;
     double varx = ssx / nm - meanx * meanx;
+
+    double var_prior_mean_x = ss_prior_mean_x / (nf + nm) 
+        - mean_prior_mean_x * mean_prior_mean_x;
+
+    double var_prior_sigma_x = ss_prior_sigma_x / (nf + nm) 
+        - mean_prior_sigma_x * mean_prior_sigma_x;
+
 
     double covtp = stp / (nf + nm) - meant * meanp;
     double covtv = stv / (nf + nm) - meant * meanv;
@@ -285,10 +333,14 @@ void GoodGenes::write_data()
         << meant << ";"
         << meanv << ";"
         << meanx << ";"
+        << mean_prior_mean_x << ";"
+        << mean_prior_sigma_x << ";"
         << varp << ";"
         << vart << ";"
         << varv << ";"
         << varx << ";"
+        << var_prior_mean_x << ";"
+        << var_prior_sigma_x << ";"
         << covtp << ";"
         << covtv << ";"
         << covpv << ";"
@@ -301,28 +353,27 @@ void GoodGenes::write_data()
 
 void GoodGenes::write_data_headers()
 {
-    data_file << "generation;meanp;meant;meanv;meanx;varp;vart;varv;varx;covtp;covtv;covpv;surv_f;surv_m;nf;nm;" << std::endl;
+    data_file << "generation;meanp;meant;meanv;meanx;mean_prior_mean;mean_prior_stddev;varp;vart;varv;varx;var_prior_mean;var_prior_stddev;covtp;covtv;covpv;surv_f;surv_m;nf;nm;" << std::endl;
 }
 
 // choose surviving male according to its ornament 
-void GoodGenes::choose(Individual const &female, double &cost, unsigned chosen_male)
+void GoodGenes::choose(Individual &female, double &cost)
 {
-    std::vector <double> male_fitness{};
-    std::vector <unsigned> male_idxs{};
-
     // distribution to sample males from
     std::uniform_int_distribution<unsigned> 
         male_sampler(0, males.size() - 1);
 
     unsigned sampled_male_idx;
+    unsigned n_mates_assessed{0};
     
-    double fitness;
-
+    // expression of the threshold
     double p = 0.5 * (female.p[0] + female.p[1]);
 
-    double x;
+    // placeholder variable for the current estimate of male ornamentation
+    double estimate;
 
-    unsigned mate;
+    // placeholder variable for the current male's ornament
+    double handicap;
 
     // set cost to 0
     cost = 0.0;
@@ -337,6 +388,9 @@ void GoodGenes::choose(Individual const &female, double &cost, unsigned chosen_m
     double posterior_variance{0.0};
     double posterior_var_inv{0.0};
 
+    double mean_ornaments{0.0};
+    double ss_ornaments{0.0};
+
     for (unsigned inspected_male_idx{0}; 
             inspected_male_idx < par.choice_sample_size; 
             ++inspected_male_idx)
@@ -348,9 +402,11 @@ void GoodGenes::choose(Individual const &female, double &cost, unsigned chosen_m
         // sample perceived ornament distribution from posterior
         estimate = prior_mean + prior_sigma * standard_normal(rng_r);
 
+        female.mate = sampled_male_idx;
+
         if (estimate >= p)
         {
-            chosen_male = sampled_male_idx;
+            break;
         }
         else
         {
@@ -392,20 +448,15 @@ void GoodGenes::choose(Individual const &female, double &cost, unsigned chosen_m
             estimate = posterior_mean + 
                 sqrt(posterior_variance) * standard_normal(rng_r);
 
-            if (estimate >= preference)
+            if (estimate >= p)
             {
-                return(sampled_male_idx);
+                break;
             }
         } // end else (i.e., estimate < preference)
     } //end for inspected male_idx
 
-    // now make distribution of the fitnesses to choose from
-    std::discrete_distribution<unsigned> choose_male(male_fitness.begin(),
-            male_fitness.end());
+    cost = n_mates_assessed * par.b;
 
-    unsigned the_chosen_male = male_idxs[choose_male(rng_r)];
-
-    return(the_chosen_male);
 } // choose()
 
 

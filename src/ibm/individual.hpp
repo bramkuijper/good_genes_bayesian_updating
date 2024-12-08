@@ -13,6 +13,8 @@ class Individual
         double prior_sigma_x[2]{0.0,0.0};
         double v[2]{0.0,0.0};
 
+        unsigned mate;
+
         // realized ornament
         double x{0.0};
 
